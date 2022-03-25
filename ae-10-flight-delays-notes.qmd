@@ -1,0 +1,164 @@
+---
+title: "AE 10: Model comparison"
+author: "Add your name here"
+format: pdf
+editor: visual
+---
+
+## Packages
+
+```{r}
+#| label: load-pkgs-data
+#| message: false
+ 
+library(tidyverse)
+library(tidymodels)
+library(knitr)
+```
+
+## Data
+
+For this application exercise we will work with a dataset of 25,000 randomly sampled flights that departed one of three NYC airports (JFK, LGA, EWR) in 2013.
+
+```{r}
+flight_data <- read_csv("data/flight-data.csv")
+```
+
+1.  Convert `arr_delay` to factor with levels `"late"` (first level) and `"on_time"` (second level). This variable is our outcome and it indicates whether the flight's arrival was more than 30 minutes.
+
+```{r}
+flight_data <- flight_data %>%
+  mutate(arr_delay = as.factor(arr_delay))
+```
+
+2.  Let's get started with some data prep: Convert all variables that are character strings to factors.
+
+```{r}
+flight_data <- flight_data %>%
+  mutate(across(where(is.character), as.factor))
+```
+
+## Modeling prep
+
+3.  Split the data into testing (75%) and training (25%), and save each subset.
+
+```{r}
+set.seed(222)
+
+flight_data <- initial_split(flight_data, prop = 3/4)
+
+flight_train <- training(flight_data)
+flight_test  <- testing(flight_data)
+```
+
+4.  Specify a logistic regression model that uses the `"glm"` engine.
+
+```{r}
+flight_spec <- logistic_reg() %>%
+  set_engine("glm")
+```
+
+Next, we'll create two recipes and workflows and compare them to each other.
+
+## Model 1: Everything and the kitchen sink
+
+5.  Define a recipe that predicts `arr_delay` using all variables except for `flight` and `time_hour`, which, in combination, can be used to identify a flight. Also make sure this recipe handles dummy coding as well as issues that can arise due to having categorical variables with some levels apparent in the training set but not in the testing set. Call this recipe `flights_rec1`.
+
+```{r}
+flights_rec1 <- recipe(arr_delay ~ ., data = flight_train) %>%
+  update_role(flight, time_hour, new_role = "ID") %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+```
+
+6.  Create a workflow that uses `flights_rec1` and the model you specified.
+
+```{r}
+flights_wflow1 <- workflow() %>%
+  add_model(flight_spec) %>%
+  add_recipe(flights_rec1)
+
+flights_wflow1
+```
+
+7.  Fit the this model to the training data using your workflow and display a tidy summary of the model fit.
+
+```{r}
+flight_fit1 <- flights_wflow1 %>%
+  fit(data = flight_train)
+
+flight_fit1 %>%
+  tidy()
+```
+
+8.  Predict `arr_delay` for the testing data using this model.
+
+```{r}
+flights_aug1 <- augment(flight_fit1, flight_test)
+
+flights_aug1 %>%
+  select(arr_delay, time_hour, flight, .pred_class, .pred_on_time)
+```
+
+9.  Plot the ROC curve and find the area under the curve. Comment on how well you think this model has done for predicting arrival delay.
+
+```{r}
+flights_aug1 %>%
+  roc_curve(truth = arr_delay, .pred_late) %>%
+  autoplot()
+
+flights_aug1 %>%
+  roc_auc(truth = arr_delay, .pred_late)
+```
+
+## Model 2: Let's be a bit more thoughtful
+
+10. Define a new recipe, `flights_rec2`, that, in addition to what was done in `flights_rec1`, adds features for day of week and month based on `date` and also adds indicators for all US holidays (also based on `date`). A list of these holidays can be found in `timeDate::listHolidays("US")`. Once these features are added, `date` should be removed from the data. Then, create a new workflow, fit the same model (logistic regression) to the training data, and do predictions on the testing data. Finally, draw another ROC curve and find the area under the curve. Compare the predictive performance of this new model to the previous one. Based on the area under the curve statistic, which model does better?
+
+```{r}
+flights_rec2 <- recipe(arr_delay ~ ., data = flight_train) %>%
+  update_role(flight, time_hour, new_role = "ID") %>%
+  step_date(date, features = c("dow", "month")) %>%
+  step_holiday(date,
+               holidays = timeDate::listHolidays("US"),
+               keep_original_cols = FALSE) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+
+flights_wflow2 <- workflow() %>%
+  add_model(flight_spec) %>%
+  add_recipe(flights_rec2)
+
+flights_fit2 <- flights_wflow2 %>%
+  fit(data = flight_train)
+
+flights_fit2 %>%
+  tidy()
+
+flights_aug2 <- augment(flights_fit2, flight_test)
+
+flights_aug2 %>%
+  select(arr_delay, time_hour, flight, .pred_class, .pred_on_time)
+
+flights_aug2 %>%
+  roc_curve(truth = arr_delay, .pred_late) %>%
+  autoplot()
+
+flights_aug2 %>%
+  roc_auc(truth = arr_delay, .pred_late)
+```
+
+## Putting it altogether
+
+11. Create an ROC curve that plots both models, in different colors, and adds a legend indicating which model is which.
+
+```{r}
+flights_aug1 %>% roc_curve(truth = arr_delay, .pred_late) %>% mutate(model = "Model 1") %>%
+  bind_rows(flights_aug2 %>% roc_curve(truth = arr_delay, .pred_late) %>% mutate(model = "Model 2")) %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity, color = model)) +
+  geom_line()
+```
+
+## Acknowledgement
+
+This exercise was inspired by <https://www.tidymodels.org/start/recipes/>.
